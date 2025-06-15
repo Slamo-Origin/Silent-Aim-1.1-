@@ -3,9 +3,8 @@
     Supports both PC and Mobile platforms
     Stable and reliable implementation
     
-    GitHub: YOUR_USERNAME/YOUR_REPO
-    Usage: loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/SilentAim.lua"))()
-]]
+    GitHub: Slam0_Origin
+    Usage: loadstring(game:HttpGet("https://raw.githubusercontent.com/Slamo-Origin/Silent-Aim-1.1-/main/Silent%20AIM%20MAIN", true))()
 
 -- =============================================
 -- CONFIGURATION
