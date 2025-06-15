@@ -2,6 +2,9 @@
     Universal Silent Aim Framework
     Supports both PC and Mobile platforms
     Stable and reliable implementation
+    
+    GitHub: YOUR_USERNAME/YOUR_REPO
+    Usage: loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/SilentAim.lua"))()
 ]]
 
 -- =============================================
@@ -128,7 +131,7 @@ local function UpdateFOVCircle()
 end
 
 -- =============================================
--- MOBILE GUI SETUP
+-- MOBILE GUI SETUP WITH DRAG FUNCTIONALITY
 -- =============================================
 local function CreateMobileGUI()
     if not IsMobile then return end
@@ -155,12 +158,40 @@ local function CreateMobileGUI()
     Corner.CornerRadius = UDim.new(0, 8)
     Corner.Parent = ToggleButton
     
-    -- Button functionality
-    ToggleButton.MouseButton1Click:Connect(function()
-        SilentAimEnabled = not SilentAimEnabled
-        ToggleButton.Text = SilentAimEnabled and "AIM: ON" or "AIM: OFF"
-        ToggleButton.BackgroundColor3 = SilentAimEnabled and 
-            Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50)
+    -- Drag functionality
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+    
+    ToggleButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = ToggleButton.Position
+        end
+    end)
+    
+    ToggleButton.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            ToggleButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    
+    ToggleButton.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging then
+                dragging = false
+                -- Only toggle if it wasn't a drag (minimal movement)
+                local delta = input.Position - dragStart
+                if math.abs(delta.X) < 10 and math.abs(delta.Y) < 10 then
+                    SilentAimEnabled = not SilentAimEnabled
+                    ToggleButton.Text = SilentAimEnabled and "AIM: ON" or "AIM: OFF"
+                    ToggleButton.BackgroundColor3 = SilentAimEnabled and 
+                        Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50)
+                end
+            end
+        end
     end)
     
     MobileGUI = ScreenGui
@@ -296,3 +327,4 @@ end)
 
 -- Start the framework
 Initialize()
+
