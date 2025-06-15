@@ -1,0 +1,215 @@
+--[[────────────────────────────────────────────────────────────────────────────
+  SILENT-AIM  v1.1   (one-file, stand-alone)
+───────────────────────────────────────────────────────────────────────────────
+  WHAT’S NEW IN 1.1
+  • Physics-based prediction  –  distance ÷ BulletSpeed + ping ± gravity
+  • Aggressive airborne tracking  –  extra lead & different aim-part when
+    target is Jumping / Freefall (perfect for Da Hood macro jumpers)
+  • Any-distance cursor-closest selector (FOV circle is now only cosmetic)
+  • Optional visuals: circle, dot, tracer, highlight
+  • Clean config block – tweak everything at the top
+───────────────────────────────────────────────────────────────────────────────]]
+
+--------------------------------------------------------------------
+-- 1) CONFIGURATION -------------------------------------------------
+--------------------------------------------------------------------
+local CFG = {
+
+  -- Hot-key
+  AimKey       = "c",            -- key to toggle / hold
+  KeyMode      = "Toggle",       -- "Toggle"  or  "Hold"
+
+  -- Cosmetic FOV circle (does not limit aiming)
+  FOVRadius    = 550,
+  FOVColour    = Color3.fromRGB(119,0,255),
+  FOVThickness = 2,
+  FOVFilled    = false,
+
+  -- Extra visuals
+  DrawDot      = true,
+  DotColor     = Color3.fromRGB(119,0,255),
+  DrawTracer   = true,
+  TracerColor  = Color3.fromRGB(119,0,255),
+  Highlight    = false,
+  HighlightColor = Color3.fromRGB(119,0,255),
+
+  -- Ballistics
+  BulletSpeed  = 3000,           -- studs / sec  (≈2700 for Hood Customs)
+  PingComp     = true,           -- add server ping to travel time
+  GravityComp  = true,           -- arc compensation
+
+  -- Aggressive jump tracking
+  AggressiveJump     = true,
+  JumpLeadMultiplier = 1.35,     -- >1 = extra lead while airborne
+  JumpAimPart        = "Head",   -- change to "UpperTorso" for centre-mass
+
+  -- Normal aim parts
+  MainPart     = "HumanoidRootPart",
+  AimParts     = {"All"},
+
+  -- Target ignore list
+  Whitelist    = {"AimLockPsycho","JakeTheMiddleMan"},
+
+  -- Random shot spread (set Enable = false for perfect hits)
+  RandomizeShots = {
+      Enable = false,
+      XRand  = 500,  YRand = 500,  ZRand = 500
+  },
+}
+
+--------------------------------------------------------------------
+-- 2) INTERNAL REFS / EXTERNAL MODULE MIRROR -----------------------
+--------------------------------------------------------------------
+local Plrs     = game:GetService("Players")
+local LP       = Plrs.LocalPlayer
+local Mouse    = LP:GetMouse()
+local Camera   = workspace.CurrentCamera
+local Gravity  = workspace.Gravity
+
+-- Mirror a few keys for scripts that look for these globals (e.g. Nyula)
+getgenv().FOV        = CFG.FOVRadius
+getgenv().AimKey     = CFG.AimKey
+getgenv().Prediction = 0
+
+-- Minimal table Nyula’s menu expects (values we don’t use stay harmless)
+getgenv().SilentAim = {
+  AimingMode    = "Index",
+  Key           = CFG.AimKey,
+  KeyMode       = CFG.KeyMode,
+  FOVCheck      = false,
+  FOVSize       = CFG.FOVRadius,
+  FOVColor      = CFG.FOVColour,
+  FOVThickness  = CFG.FOVThickness,
+  FOVFilled     = CFG.FOVFilled,
+  Dot           = CFG.DrawDot,
+  Tracer        = CFG.DrawTracer,
+  Highlight     = CFG.Highlight,
+  AllowAim      = true,
+  Enabled       = true,
+}
+
+--------------------------------------------------------------------
+-- 3) MISC UTILITIES ----------------------------------------------
+--------------------------------------------------------------------
+-- Turn executor log spam off (optional)
+for _,c in ipairs(getconnections(game:GetService("LogService").MessageOut)) do c:Disable() end
+
+-- Ping helper (seconds)
+local function getPing()
+  local ok,ms = pcall(function()
+       return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+  end)
+  return (ok and ms or 35)/1000
+end
+
+-- State helpers
+local function isAirborne(hum)
+  local s = hum:GetState()
+  return s==Enum.HumanoidStateType.Jumping or s==Enum.HumanoidStateType.Freefall
+end
+
+local function chooseAimPart(char,hum)
+  if CFG.AggressiveJump and isAirborne(hum) then
+      return char:FindFirstChild(CFG.JumpAimPart) or char:FindFirstChild(CFG.MainPart)
+  end
+  return char:FindFirstChild(CFG.MainPart)
+end
+
+-- Ballistic prediction
+local function predictedCFrame(part,hum)
+  local origin   = Camera.CFrame.Position
+  local vel      = part.AssemblyLinearVelocity
+  local dist     = (part.Position - origin).Magnitude
+  local t        = dist / CFG.BulletSpeed
+  if CFG.PingComp then t = t + getPing() end
+  if CFG.AggressiveJump and isAirborne(hum) then
+      t = t * CFG.JumpLeadMultiplier
+  end
+
+  local pos = part.Position + vel * t
+  if CFG.GravityComp then
+      pos = pos + Vector3.new(0,0.5*Gravity*t*t,0)
+  end
+  if CFG.RandomizeShots.Enable then
+      pos = pos + Vector3.new(
+          math.random(-CFG.RandomizeShots.XRand,CFG.RandomizeShots.XRand)/1000,
+          math.random(-CFG.RandomizeShots.YRand,CFG.RandomizeShots.YRand)/1000,
+          math.random(-CFG.RandomizeShots.ZRand,CFG.RandomizeShots.ZRand)/1000 )
+  end
+  return CFrame.new(pos)
+end
+
+--------------------------------------------------------------------
+-- 4) COSMETIC DRAWINGS -------------------------------------------
+--------------------------------------------------------------------
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Visible, FOVCircle.Filled = true, CFG.FOVFilled
+FOVCircle.Thickness, FOVCircle.Radius = CFG.FOVThickness, CFG.FOVRadius
+FOVCircle.Color, FOVCircle.Transparency = CFG.FOVColour, 1
+task.spawn(function()
+  while task.wait() do
+      FOVCircle.Position = Vector2.new(Mouse.X,Mouse.Y+36)
+  end
+end)
+
+--------------------------------------------------------------------
+-- 5) ENABLE / TOGGLE LOGIC ---------------------------------------
+--------------------------------------------------------------------
+local SilentEnabled = true
+local function updateCircle() FOVCircle.Color = SilentEnabled and CFG.FOVColour or Color3.fromRGB(255,0,0) end
+updateCircle()
+
+Mouse.KeyDown:Connect(function(k)
+  if k:lower()==CFG.AimKey:lower() then
+     if CFG.KeyMode=="Toggle" then
+        SilentEnabled = not SilentEnabled
+     else
+        SilentEnabled = true
+     end
+     updateCircle()
+  end
+end)
+Mouse.KeyUp:Connect(function(k)
+  if k:lower()==CFG.AimKey:lower() and CFG.KeyMode=="Hold" then
+     SilentEnabled = false
+     updateCircle()
+  end
+end)
+
+--------------------------------------------------------------------
+-- 6) MAIN __index HOOK -------------------------------------------
+--------------------------------------------------------------------
+local old; old = hookmetamethod(game,"__index",function(self,Index)
+  if self==Mouse and Index:lower()=="hit" and SilentEnabled and SilentAim.AllowAim then
+      local best,dist = nil,9e9
+      for _,plr in ipairs(Plrs:GetPlayers()) do
+          if plr~=LP and not table.find(CFG.Whitelist,plr.Name) then
+              local char,hum = plr.Character, plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+              if char and hum and hum.Health>0 then
+                  local part = chooseAimPart(char,hum)
+                  if part then
+                      local scr,vis = Camera:WorldToScreenPoint(part.Position)
+                      if vis then
+                          local mag = (Vector2.new(Mouse.X,Mouse.Y)-Vector2.new(scr.X,scr.Y)).Magnitude
+                          if mag < dist then dist,best = mag,{part=part,hum=hum} end
+                      end
+                  end
+              end
+          end
+      end
+      if best then return predictedCFrame(best.part,best.hum) end
+  end
+  return old(self,Index)
+end)
+
+--------------------------------------------------------------------
+-- 7) OPTIONAL: NYULA VISUAL MODULE --------------------------------
+--------------------------------------------------------------------
+pcall(function()
+   loadstring(game:HttpGet(
+     "https://raw.githubusercontent.com/nyulachan/nyula/main/Standalones/FOVSilentV2",
+     true))()
+end)
+
+print(string.format("[Silent-Aim v1.1] Loaded | BulletSpeed=%d | JumpAggressive=%s",
+        CFG.BulletSpeed, tostring(CFG.AggressiveJump)))
