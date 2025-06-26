@@ -1,329 +1,496 @@
---[[
-    Universal Silent Aim Framework
-    Supports both PC and Mobile platforms
-    Stable and reliable implementation
-    
-    GitHub: Slam0_Origin
-    Usage: loadstring(game:HttpGet("https://raw.githubusercontent.com/Slamo-Origin/Silent-Aim-1.1-/main/Silent%20AIM%20MAIN", true))()
+  --[[────────────────────────────────────────────────────────────────────────────
+    SILENT-AIM v1.3 - Standalone Framework
+    PC & Mobile Compatible with adaptive controls
+  ────────────────────────────────────────────────────────────────────────────────]]
 
--- =============================================
--- CONFIGURATION
--- =============================================
-local Config = {
-    -- Aim Settings
-    Prediction = 0.155,
-    FOVRadius = 400,
-    ToggleKey = "c", -- PC only
-    
-    -- Whitelist
-    WhitelistedPlayers = {
-        "Player1";
-        "Player2";
-        "Player3";
+  --------------------------------------------------------------------
+  -- 1) CONFIGURATION -----------------------------------------------
+  --------------------------------------------------------------------
+  local CFG = {
+    -- Hot-key (PC only)
+    AimKey       = "c",            -- key to toggle / hold
+    KeyMode      = "Toggle",       -- "Toggle" or "Hold"
+
+    -- Mobile controls
+    MobileButton = true,           -- Show mobile toggle button
+    ButtonSize   = UDim2.new(0, 80, 0, 80),
+    ButtonPos    = UDim2.new(0, 10, 0.5, -40),
+    ButtonColor  = Color3.fromRGB(119,0,255),
+
+    -- Cosmetic FOV circle (does not limit aiming)
+    FOVRadius    = 550,
+    FOVColour    = Color3.fromRGB(119,0,255),
+    FOVThickness = 2,
+    FOVFilled    = false,
+
+    -- Extra visuals
+    DrawDot      = true,
+    DotColor     = Color3.fromRGB(119,0,255),
+    DrawTracer   = true,
+    TracerColor  = Color3.fromRGB(119,0,255),
+    Highlight    = false,
+    HighlightColor = Color3.fromRGB(119,0,255),
+
+    -- Ballistics
+    BulletSpeed  = 3000,           -- studs / sec
+    PingComp     = true,           -- add server ping to travel time
+    GravityComp  = true,           -- arc compensation
+
+    -- Aggressive jump tracking
+    AggressiveJump     = true,
+    JumpLeadMultiplier = 1.35,     -- >1 = extra lead while airborne
+    JumpAimPart        = "Head",   -- change to "UpperTorso" for centre-mass
+
+    -- Normal aim parts
+    MainPart     = "HumanoidRootPart",
+    AimParts     = {"All"},
+
+    -- Target ignore list
+    Whitelist    = {"AimLockPsycho","JakeTheMiddleMan"},
+
+    -- Random shot spread
+    RandomizeShots = {
+        Enable = false,
+        XRand  = 500,  YRand = 500,  ZRand = 500
     },
-    
-    -- Visual Settings
-    FOVColor = {
-        Enabled = Color3.fromRGB(0, 200, 50),
-        Disabled = Color3.fromRGB(200, 50, 50)
-    },
-    
-    -- Mobile Settings
-    MobileButtonPosition = UDim2.new(0, 20, 0, 100),
-    MobileButtonSize = UDim2.new(0, 120, 0, 60),
-    
-    -- Advanced
-    WallCheck = true,
-    HealthCheck = true,
-    TeamCheck = false
-}
+  }
 
--- =============================================
--- SERVICES & VARIABLES
--- =============================================
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local TeleportService = game:GetService("TeleportService")
-local Workspace = game:GetService("Workspace")
+  --------------------------------------------------------------------
+  -- 2) SERVICES & VARIABLES ----------------------------------------
+  --------------------------------------------------------------------
+  local Players = game:GetService("Players")
+  local UserInputService = game:GetService("UserInputService")
+  local RunService = game:GetService("RunService")
+  local TweenService = game:GetService("TweenService")
+  local Stats = game:GetService("Stats")
+  local GuiService = game:GetService("GuiService")
 
-local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
-local Camera = Workspace.CurrentCamera
+  local LocalPlayer = Players.LocalPlayer
+  local Mouse = LocalPlayer:GetMouse()
+  local Camera = workspace.CurrentCamera
+  local Gravity = workspace.Gravity
 
--- Platform Detection
-local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-local IsPC = not IsMobile
+  local SilentEnabled = true
+  local CurrentTarget = nil
+  local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
--- State Variables
-local SilentAimEnabled = true
-local CurrentTarget = nil
-local FOVCircle = nil
-local MobileGUI = nil
+  -- Screen center calculation
+  local function getScreenCenter()
+    return Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+  end
 
--- =============================================
--- UTILITY FUNCTIONS
--- =============================================
-local function IsPlayerWhitelisted(player)
-    for _, name in pairs(Config.WhitelistedPlayers) do
-        if player.Name == name then
-            return true
-        end
-    end
-    return false
-end
+  --------------------------------------------------------------------
+  -- 3) MOBILE GUI SETUP --------------------------------------------
+  --------------------------------------------------------------------
+  local ScreenGui = nil
+  local ToggleButton = nil
 
-local function IsValidTarget(player)
-    if not player or player == LocalPlayer then return false end
-    if IsPlayerWhitelisted(player) then return false end
-    if not player.Character then return false end
-    
-    local humanoid = player.Character:FindFirstChild("Humanoid")
-    local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
-    
-    if not humanoid or not rootPart then return false end
-    if Config.HealthCheck and humanoid.Health <= 0 then return false end
-    
-    return true
-end
-
-local function PerformWallCheck(targetPosition)
-    if not Config.WallCheck then return true end
-    
-    local origin = Camera.CFrame.Position
-    local direction = (targetPosition - origin).Unit * (targetPosition - origin).Magnitude
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
-    
-    local result = Workspace:Raycast(origin, direction, raycastParams)
-    return not result or result.Distance > (targetPosition - origin).Magnitude - 3
-end
-
--- =============================================
--- FOV CIRCLE MANAGEMENT
--- =============================================
-local function CreateFOVCircle()
-    if not Drawing then return end
-    
-    FOVCircle = Drawing.new("Circle")
-    FOVCircle.Thickness = 2
-    FOVCircle.NumSides = 50
-    FOVCircle.Radius = Config.FOVRadius
-    FOVCircle.Filled = false
-    FOVCircle.Visible = true
-    FOVCircle.ZIndex = 999
-    FOVCircle.Transparency = 1
-    FOVCircle.Color = Config.FOVColor.Enabled
-end
-
-local function UpdateFOVCircle()
-    if not FOVCircle then return end
-    
-    if IsMobile then
-        FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    else
-        FOVCircle.Position = Vector2.new(Mouse.X, Mouse.Y)
-    end
-    
-    FOVCircle.Color = SilentAimEnabled and Config.FOVColor.Enabled or Config.FOVColor.Disabled
-end
-
--- =============================================
--- MOBILE GUI SETUP WITH DRAG FUNCTIONALITY
--- =============================================
-local function CreateMobileGUI()
-    if not IsMobile then return end
-    
-    local ScreenGui = Instance.new("ScreenGui")
+  if IsMobile and CFG.MobileButton then
+    -- Create ScreenGui
+    ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "SilentAimMobile"
     ScreenGui.ResetOnSpawn = false
-    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     
-    local ToggleButton = Instance.new("TextButton")
+    -- Create Toggle Button
+    ToggleButton = Instance.new("TextButton")
     ToggleButton.Name = "ToggleButton"
     ToggleButton.Parent = ScreenGui
-    ToggleButton.Size = Config.MobileButtonSize
-    ToggleButton.Position = Config.MobileButtonPosition
-    ToggleButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    ToggleButton.Size = CFG.ButtonSize
+    ToggleButton.Position = CFG.ButtonPos
+    ToggleButton.BackgroundColor3 = CFG.ButtonColor
     ToggleButton.BorderSizePixel = 0
-    ToggleButton.Text = "AIM: ON"
+    ToggleButton.Text = "AIM"
     ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
     ToggleButton.TextScaled = true
-    ToggleButton.Font = Enum.Font.GothamBold
+    ToggleButton.Font = Enum.Font.SourceSansBold
+    ToggleButton.ZIndex = 10
     
-    -- Rounded corners
+    -- Make button round
     local Corner = Instance.new("UICorner")
-    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.CornerRadius = UDim.new(0.5, 0)
     Corner.Parent = ToggleButton
     
-    -- Drag functionality
+    -- Add stroke
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Color3.fromRGB(255, 255, 255)
+    Stroke.Thickness = 2
+    Stroke.Parent = ToggleButton
+    
+    -- Draggable functionality
     local dragging = false
     local dragStart = nil
     local startPos = nil
     
     ToggleButton.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = ToggleButton.Position
-        end
+      if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = ToggleButton.Position
+      end
     end)
     
     ToggleButton.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            ToggleButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
+      if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        ToggleButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+      end
     end)
     
     ToggleButton.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            if dragging then
-                dragging = false
-                -- Only toggle if it wasn't a drag (minimal movement)
-                local delta = input.Position - dragStart
-                if math.abs(delta.X) < 10 and math.abs(delta.Y) < 10 then
-                    SilentAimEnabled = not SilentAimEnabled
-                    ToggleButton.Text = SilentAimEnabled and "AIM: ON" or "AIM: OFF"
-                    ToggleButton.BackgroundColor3 = SilentAimEnabled and 
-                        Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50)
-                end
-            end
+      if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if dragging then
+          dragging = false
+          -- Toggle aim if it was a tap (not a drag)
+          local delta = input.Position - dragStart
+          if delta.Magnitude < 10 then -- Small movement threshold
+            SilentEnabled = not SilentEnabled
+            updateMobileButton()
+          end
         end
+      end
     end)
     
-    MobileGUI = ScreenGui
-end
+    -- Parent to PlayerGui
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+  end
 
--- =============================================
--- INPUT HANDLING
--- =============================================
-local function SetupPCInput()
-    if not IsPC then return end
-    
-    Mouse.KeyDown:Connect(function(key)
-        if key:lower() == Config.ToggleKey:lower() then
-            SilentAimEnabled = not SilentAimEnabled
-        elseif key == "=" then
-            -- Rejoin functionality
-            TeleportService:Teleport(game.PlaceId, LocalPlayer)
-        end
+  local function updateMobileButton()
+    if ToggleButton then
+      if SilentEnabled then
+        ToggleButton.BackgroundColor3 = CFG.ButtonColor
+        ToggleButton.Text = "AIM\nON"
+      else
+        ToggleButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+        ToggleButton.Text = "AIM\nOFF"
+      end
+    end
+  end
+
+  --------------------------------------------------------------------
+  -- 4) DRAWING SYSTEM (Built-in) -----------------------------------
+  --------------------------------------------------------------------
+  local Drawings = {}
+
+  -- FOV Circle (locked to screen center)
+  local FOVCircle = Drawing.new("Circle")
+  FOVCircle.Visible = true
+  FOVCircle.Filled = CFG.FOVFilled
+  FOVCircle.Thickness = CFG.FOVThickness
+  FOVCircle.Radius = CFG.FOVRadius
+  FOVCircle.Color = CFG.FOVColour
+  FOVCircle.Transparency = 1
+  FOVCircle.Position = getScreenCenter()
+  table.insert(Drawings, FOVCircle)
+
+  -- Target Dot
+  local TargetDot = Drawing.new("Circle")
+  TargetDot.Visible = false
+  TargetDot.Filled = true
+  TargetDot.Thickness = 1
+  TargetDot.Radius = 3
+  TargetDot.Color = CFG.DotColor
+  TargetDot.Transparency = 1
+  table.insert(Drawings, TargetDot)
+
+  -- Tracer Line
+  local TracerLine = Drawing.new("Line")
+  TracerLine.Visible = false
+  TracerLine.Thickness = 2
+  TracerLine.Color = CFG.TracerColor
+  TracerLine.Transparency = 1
+  table.insert(Drawings, TracerLine)
+
+  --------------------------------------------------------------------
+  -- 5) UTILITY FUNCTIONS -------------------------------------------
+  --------------------------------------------------------------------
+  local function getPing()
+    local success, ping = pcall(function()
+      return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
     end)
-end
+    return (success and ping or 35) / 1000
+  end
 
--- =============================================
--- TARGET SELECTION
--- =============================================
-local function GetClosestTarget()
+  local function isAirborne(humanoid)
+    local state = humanoid:GetState()
+    return state == Enum.HumanoidStateType.Jumping or 
+           state == Enum.HumanoidStateType.Freefall
+  end
+
+  local function getAimPart(character, humanoid)
+    if CFG.AggressiveJump and isAirborne(humanoid) then
+      return character:FindFirstChild(CFG.JumpAimPart) or 
+             character:FindFirstChild(CFG.MainPart)
+    end
+    return character:FindFirstChild(CFG.MainPart)
+  end
+
+  local function isWhitelisted(playerName)
+    for _, name in ipairs(CFG.Whitelist) do
+      if name == playerName then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function isValidTarget(player)
+    if player == LocalPlayer then return false end
+    if isWhitelisted(player.Name) then return false end
+    
+    local character = player.Character
+    if not character then return false end
+    
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return false end
+    
+    return true
+  end
+
+  --------------------------------------------------------------------
+  -- 6) PREDICTION SYSTEM -------------------------------------------
+  --------------------------------------------------------------------
+  local function predictPosition(part, humanoid)
+    local origin = Camera.CFrame.Position
+    local velocity = part.AssemblyLinearVelocity
+    local distance = (part.Position - origin).Magnitude
+    
+    -- Calculate travel time
+    local travelTime = distance / CFG.BulletSpeed
+    
+    -- Add ping compensation
+    if CFG.PingComp then
+      travelTime = travelTime + getPing()
+    end
+    
+    -- Apply aggressive jump multiplier
+    if CFG.AggressiveJump and isAirborne(humanoid) then
+      travelTime = travelTime * CFG.JumpLeadMultiplier
+    end
+    
+    -- Predict position
+    local predictedPos = part.Position + velocity * travelTime
+    
+    -- Apply gravity compensation
+    if CFG.GravityComp then
+      predictedPos = predictedPos + Vector3.new(0, 0.5 * Gravity * travelTime * travelTime, 0)
+    end
+    
+    -- Apply randomization
+    if CFG.RandomizeShots.Enable then
+      predictedPos = predictedPos + Vector3.new(
+        math.random(-CFG.RandomizeShots.XRand, CFG.RandomizeShots.XRand) / 1000,
+        math.random(-CFG.RandomizeShots.YRand, CFG.RandomizeShots.YRand) / 1000,
+        math.random(-CFG.RandomizeShots.ZRand, CFG.RandomizeShots.ZRand) / 1000
+      )
+    end
+    
+    return CFrame.new(predictedPos)
+  end
+
+  --------------------------------------------------------------------
+  -- 7) TARGET SELECTION --------------------------------------------
+  --------------------------------------------------------------------
+  local function getClosestTarget()
     local closestPlayer = nil
     local shortestDistance = math.huge
-    local mousePos = IsMobile and 
-        Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2) or 
-        Vector2.new(Mouse.X, Mouse.Y)
+    local screenCenter = getScreenCenter()
     
-    for _, player in pairs(Players:GetPlayers()) do
-        if IsValidTarget(player) then
-            local character = player.Character
-            local rootPart = character.HumanoidRootPart
+    for _, player in ipairs(Players:GetPlayers()) do
+      if isValidTarget(player) then
+        local character = player.Character
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local aimPart = getAimPart(character, humanoid)
+        
+        if aimPart then
+          local screenPos, onScreen = Camera:WorldToScreenPoint(aimPart.Position)
+          
+          if onScreen then
+            local distance = (screenCenter - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
             
-            local screenPos, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
-            if onScreen then
-                local distance = (mousePos - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
-                
-                if distance < Config.FOVRadius and distance < shortestDistance then
-                    if PerformWallCheck(rootPart.Position) then
-                        closestPlayer = player
-                        shortestDistance = distance
-                    end
-                end
+            if distance < shortestDistance then
+              shortestDistance = distance
+              closestPlayer = {
+                player = player,
+                character = character,
+                humanoid = humanoid,
+                part = aimPart,
+                screenPos = Vector2.new(screenPos.X, screenPos.Y),
+                distance = distance
+              }
             end
+          end
         end
+      end
     end
     
-    CurrentTarget = closestPlayer
     return closestPlayer
-end
+  end
 
--- =============================================
--- SILENT AIM HOOK
--- =============================================
-local function SetupSilentAim()
-    local oldIndex
-    oldIndex = hookmetamethod(game, "__index", function(self, key)
-        local result = oldIndex(self, key)
-        
-        if SilentAimEnabled and self == Mouse and key:lower() == "hit" then
-            local target = GetClosestTarget()
-            if target and target.Character then
-                local rootPart = target.Character:FindFirstChild("HumanoidRootPart")
-                if rootPart then
-                    local velocity = rootPart.AssemblyLinearVelocity
-                    local predictedPosition = rootPart.CFrame.Position + (velocity * Config.Prediction)
-                    return CFrame.new(predictedPosition)
-                end
-            end
-        end
-        
-        return result
-    end)
-end
-
--- =============================================
--- MAIN LOOP
--- =============================================
-local function StartMainLoop()
-    RunService.Heartbeat:Connect(function()
-        UpdateFOVCircle()
-        if SilentAimEnabled then
-            GetClosestTarget()
-        end
-    end)
-end
-
--- =============================================
--- INITIALIZATION
--- =============================================
-local function Initialize()
-    -- Disable console logs
-    for _, connection in pairs(getconnections(game:GetService("LogService").MessageOut)) do
-        connection:Disable()
-    end
+  --------------------------------------------------------------------
+  -- 8) VISUAL UPDATES -----------------------------------------------
+  --------------------------------------------------------------------
+  local function updateVisuals()
+    -- Keep FOV Circle locked to screen center
+    FOVCircle.Position = getScreenCenter()
+    FOVCircle.Color = SilentEnabled and CFG.FOVColour or Color3.fromRGB(255, 0, 0)
     
-    -- Setup platform-specific features
-    if IsMobile then
-        CreateMobileGUI()
+    -- Update target visuals
+    if CurrentTarget and CFG.DrawDot then
+      TargetDot.Visible = true
+      TargetDot.Position = CurrentTarget.screenPos
     else
-        SetupPCInput()
+      TargetDot.Visible = false
     end
     
-    -- Create FOV circle
-    CreateFOVCircle()
+    if CurrentTarget and CFG.DrawTracer then
+      TracerLine.Visible = true
+      TracerLine.From = getScreenCenter()
+      TracerLine.To = CurrentTarget.screenPos
+    else
+      TracerLine.Visible = false
+    end
     
-    -- Setup silent aim
-    SetupSilentAim()
-    
-    -- Start main loop
-    StartMainLoop()
-    
-    print("Silent Aim Framework loaded successfully!")
-    print("Platform:", IsMobile and "Mobile" or "PC")
-end
+    -- Update mobile button
+    updateMobileButton()
+  end
 
--- =============================================
--- CLEANUP
--- =============================================
-game.Players.PlayerRemoving:Connect(function(player)
+  --------------------------------------------------------------------
+  -- 9) INPUT HANDLING ----------------------------------------------
+  --------------------------------------------------------------------
+  -- PC Keyboard Input
+  if not IsMobile then
+    local function onKeyDown(key)
+      if key.KeyCode.Name:lower() == CFG.AimKey:lower() then
+        if CFG.KeyMode == "Toggle" then
+          SilentEnabled = not SilentEnabled
+        else
+          SilentEnabled = true
+        end
+      end
+    end
+
+    local function onKeyUp(key)
+      if key.KeyCode.Name:lower() == CFG.AimKey:lower() and CFG.KeyMode == "Hold" then
+        SilentEnabled = false
+      end
+    end
+
+    UserInputService.InputBegan:Connect(onKeyDown)
+    UserInputService.InputEnded:Connect(onKeyUp)
+  end
+
+  -- Universal input handling (works on both PC and Mobile)
+  UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    -- Handle touch input for mobile
+    if input.UserInputType == Enum.UserInputType.Touch then
+      -- Touch input is handled by the mobile button
+      return
+    end
+    
+    -- Handle keyboard input
+    if input.KeyCode and input.KeyCode.Name:lower() == CFG.AimKey:lower() then
+      if CFG.KeyMode == "Toggle" then
+        SilentEnabled = not SilentEnabled
+      else
+        SilentEnabled = true
+      end
+    end
+  end)
+
+  UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.KeyCode and input.KeyCode.Name:lower() == CFG.AimKey:lower() and CFG.KeyMode == "Hold" then
+      SilentEnabled = false
+    end
+  end)
+
+  --------------------------------------------------------------------
+  -- 10) MAIN HOOK --------------------------------------------------
+  --------------------------------------------------------------------
+  local oldIndex
+  oldIndex = hookmetamethod(game, "__index", function(self, index)
+    if self == Mouse and index:lower() == "hit" and SilentEnabled then
+      if CurrentTarget then
+        return predictPosition(CurrentTarget.part, CurrentTarget.humanoid)
+      end
+    end
+    return oldIndex(self, index)
+  end)
+
+  --------------------------------------------------------------------
+  -- 11) MAIN LOOP --------------------------------------------------
+  --------------------------------------------------------------------
+  local function mainLoop()
+    if SilentEnabled then
+      CurrentTarget = getClosestTarget()
+    else
+      CurrentTarget = nil
+    end
+    
+    updateVisuals()
+  end
+
+  RunService.Heartbeat:Connect(mainLoop)
+
+  -- Update FOV circle position when screen size changes
+  Camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+    FOVCircle.Position = getScreenCenter()
+  end)
+
+  --------------------------------------------------------------------
+  -- 12) CLEANUP ON DISCONNECT --------------------------------------
+  --------------------------------------------------------------------
+  local function cleanup()
+    for _, drawing in ipairs(Drawings) do
+      if drawing then
+        drawing:Remove()
+      end
+    end
+    
+    if ScreenGui then
+      ScreenGui:Destroy()
+    end
+  end
+
+  Players.PlayerRemoving:Connect(function(player)
     if player == LocalPlayer then
-        if FOVCircle then
-            FOVCircle:Remove()
-        end
-        if MobileGUI then
-            MobileGUI:Destroy()
-        end
+      cleanup()
     end
-end)
+  end)
 
--- Start the framework
-Initialize()
+  -- Cleanup on script end
+  game:GetService("Players").PlayerRemoving:Connect(cleanup)
 
+  --------------------------------------------------------------------
+  -- 13) INITIALIZATION ----------------------------------------------
+  --------------------------------------------------------------------
+  local platformText = IsMobile and "MOBILE" or "PC"
+  print(string.format(
+    "[Silent-Aim v1.3] Loaded | Platform=%s | BulletSpeed=%d | JumpAggressive=%s | Key=%s",
+    platformText,
+    CFG.BulletSpeed, 
+    tostring(CFG.AggressiveJump),
+    IsMobile and "TOUCH" or CFG.AimKey:upper()
+  ))
+
+  -- Set global variables for compatibility
+  getgenv().SilentAim = {
+    Enabled = true,
+    AllowAim = true,
+    IsMobile = IsMobile,
+    Toggle = function() 
+      SilentEnabled = not SilentEnabled 
+      updateMobileButton()
+    end,
+    GetTarget = function() return CurrentTarget end,
+    Config = CFG
+  }
+
+  -- Initialize mobile button state
+  if IsMobile then
+    updateMobileButton()
+  end
